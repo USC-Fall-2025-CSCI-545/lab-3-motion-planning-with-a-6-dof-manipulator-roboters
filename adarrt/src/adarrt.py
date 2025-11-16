@@ -14,6 +14,7 @@ class AdaRRT():
     """
     joint_lower_limits = np.array([-3.14, 1.57, 0.33, -3.14, 0, 0])
     joint_upper_limits = np.array([3.14, 5.00, 5.00, 3.14, 3.14, 3.14])
+    periodic_index = [0,3]
 
     class Node():
         """
@@ -106,14 +107,20 @@ class AdaRRT():
         """
         for k in range(self.max_iter):
             # FILL in your code here
+            random_sample = self._get_random_sample() # step 1: sample a random point
+            nearest_neighbor = self._get_nearest_neighbor(random_sample) # step 2: find nearest neighbor for the corresponding sample point
+            new_node = self._extend_sample(random_sample,nearest_neighbor) # step 3: create a new node in the direction of sample from its NN
 
-            if new_node and self._check_for_completion(new_node):
+            if new_node and self._check_for_completion(new_node): # step 4: if a new node is created, check completion condition
                 # FILL in your code here
-
+                self.goal.parent = new_node # step 5: add the goal node to the RRT by connecting goal node with the new_node
+                                            # and store the parent/children relationship correspondingly for each node
+                new_node.children.append(self.goal)
+                path = self._trace_path_from_start(self.goal) # step 6: build a path from start to goal by tracing parent-children pointers
                 return path
 
         print("Failed to find path from {0} to {1} after {2} iterations!".format(
-            self.start.state, self.goal.state, self.max_iter))
+            self.start.state, self.goal.state, self.max_iter)) # fail to find a path from start to the goal node in RRT tree with a max iteration
 
     def _get_random_sample(self):
         """
@@ -126,6 +133,24 @@ class AdaRRT():
         return np.random.uniform(self.joint_lower_limits,
                                  self.joint_upper_limits)
 
+    def angle_difference_mapping(self,state_x,state_y):
+        '''
+        Input: 2 state vector state_x and state_y represents angle sets
+        Output: angle difference vector after converting into the interval (-pi,pi) to reflect the real angle difference
+        '''
+        ## for joint1 and joint4, the value of the angle is ranging from -pi to pi(periodic), L2 norm can't measure the difference
+        ## of the corner case eg: -170 degree and 170 degree has a 20 degree difference
+        state_x_copy = np.asarray(state_x,dtype=float)
+        state_y_copy = np.asarray(state_y,dtype=float) # avoid changing the original array
+        difference = state_x_copy - state_y_copy 
+        # mapping angle diffference to (-pi,pi) only for periodic joints
+        for j in self.periodic_index:
+            difference[j] = (difference[j] + np.pi) % (2 * np.pi) - np.pi
+        # mapping difference to the interval in (-pi,pi),modulus has a 2pi period
+        # only apply conversion for the corner case on the boundary, other state difference has the same value before and after conversion
+        return difference
+
+
     def _get_nearest_neighbor(self, sample):
         """
         Finds the closest node to the given sample in the search space,
@@ -135,6 +160,24 @@ class AdaRRT():
         :returns: A Node object for the closest neighbor.
         """
         # FILL in your code here
+        random_sample = np.asarray(sample) # ensure the data type of variable sample is a numpy array, consistency
+
+        nearest_nn = None # initialize a variable to store the NN node for a given random sample
+        optimal_distance = float('inf') # initialize a variable to store the distance from the NN node to the random sample
+
+        # iterate through all nodes in the RRT tree to obtain the nearest neighbor, BFS style search for iterable object Node
+        for RRT_node in self.start:
+            if RRT_node is self.goal: # skip if the node retrieved from the tree is goal node, we want to approach it
+                continue
+            
+            # state_difference = np.linalg.norm(RRT_node.state - random_sample)
+            state_difference = self.angle_difference_mapping(RRT_node.state,random_sample) # angle difference after the conversion
+            distance = np.linalg.norm(state_difference) # evaluate how close from the node in RRT to the sample point 
+
+            if distance < optimal_distance: # if some node retrieved from the RRT has a pose/state closer to the random sample 
+                nearest_nn = RRT_node       # record it as NN 
+                optimal_distance = distance
+        return nearest_nn
 
     def _extend_sample(self, sample, neighbor):
         """
@@ -148,6 +191,51 @@ class AdaRRT():
         :returns: The new Node object. On failure (collision), returns None.
         """
         # FILL in your code here
+        if neighbor is None: # if nn doesn't exist, can't extend the RRT and create a new node
+            return None 
+        # vector pointing from neighbor node to the sample node(sample - neighbor), be careful of the order in the input parameter
+        # mapping difference to the interval in (-pi,pi) to obtain real difference
+        direction_mapping = self.angle_difference_mapping(sample,neighbor.state)
+        distance = np.linalg.norm(direction_mapping) # vector distance
+        if distance == 0: # neighbor node is coincident with the sample node, skip extend process
+            return None
+        step_size = min(self.step_size,distance) # case: distance is smaller than the step size, only extend on the line between NN and sample
+        new_node_state = neighbor.state + (direction_mapping / distance)*step_size # unit vector points from neighbor to the sample
+                                                                                   # multiply with step_size indicate the magnitude of extension
+        # ensure periodic state generated by extension is within the boundary (-pi,pi)
+        for j in self.periodic_index:
+            new_node_state[j] = (new_node_state[j] + np.pi) % (2 * np.pi) - np.pi
+        # ensure all angles within the boundary
+        for j in range(len(new_node_state)):
+            if j not in self.periodic_index:
+                new_node_state[j] = np.minimum(np.maximum(new_node_state[j],self.joint_lower_limits[j]),self.joint_upper_limits[j])
+        
+        extend_difference = self.angle_difference_mapping(new_node_state,neighbor.state) # vector points from neighor to the extended node
+        if np.linalg.norm(extend_difference) < 1e-6: # neighbor node is coincident with the sample node, skip extend process
+            return None
+
+        # collision checking the line from neighbor to the extended node by interpolation
+        interpolation_rate = self.step_size * 0.125 # how many points we want to interpolate can be adjusted
+        num_interpolation_points = int(np.ceil(np.linalg.norm(extend_difference) / interpolation_rate)) # distance of line / step_size = num of points
+
+        if num_interpolation_points < 1: # always check the collision status for the new_node 
+            num_interpolation_points = 1
+
+        for p in range(1,num_interpolation_points + 1): # proportion on the straight line decide where to interpolate
+            interpolated_point = neighbor.state + extend_difference *(float(p) / num_interpolation_points)
+            for j in self.periodic_index:
+                interpolated_point[j] = (interpolated_point[j] + np.pi) % (2 * np.pi) - np.pi
+            for j in range(len(interpolated_point)):
+                if j not in self.periodic_index:
+                    interpolated_point[j] = np.minimum(np.maximum(interpolated_point[j],self.joint_lower_limits[j]),self.joint_upper_limits[j]) 
+            # ensure all angles within the boundary
+            if self._check_for_collision(interpolated_point): # True -- collision False -- collision-free
+                return None
+
+        ## if new_node pass the straight-line collision test
+        new_node  = neighbor.add_child(new_node_state) # link extended node as the children of the NN node and return
+        return new_node
+
 
     def _check_for_completion(self, node):
         """
@@ -157,8 +245,35 @@ class AdaRRT():
         :returns: Boolean indicating node is close enough for completion.
         """
         # FILL in your code here
+        '''
         distance = np.linalg.norm(node.state - self.goal.state)
         return distance <= self.goal_precision
+        '''
+        difference_mapping = self.angle_difference_mapping(self.goal.state,node.state) #vector points from target node to the goal node
+        distance = np.linalg.norm(difference_mapping) # # vector L2 distance between 2 poses difference
+
+        if distance <= self.goal_precision: # if the target node is close enough to the goal node
+            # check the straight line from target node to the goal has no collision with the obstacle by interpolation
+            interpolation_rate = self.step_size * 0.125 # how many points we want to interpolate can be adjusted
+            num_interpolation_points = int(np.ceil(distance / interpolation_rate)) # distance of line / step_size = num of points
+            num_interpolation_points =  max(num_interpolation_points,1) # always check the collision status for the new_node 
+
+            for p in range(1,num_interpolation_points + 1): # proportion on the straight line decide where to interpolate
+                interpolated_point = node.state + difference_mapping *(float(p) / num_interpolation_points)
+                for j in self.periodic_index:
+                    interpolated_point[j] = (interpolated_point[j] + np.pi) % (2 * np.pi) - np.pi 
+                for j in range(len(interpolated_point)):
+                    if j not in self.periodic_index:
+                        interpolated_point[j] = np.minimum(np.maximum(interpolated_point[j],self.joint_lower_limits[j]),self.joint_upper_limits[j])
+                # ensure all angles within the boundary
+                if self._check_for_collision(interpolated_point): # True -- collision False -- collision-free
+                    return False # collsion happens, this node is not counted as task completion
+
+            return True # close enough to the goal node + collision-free indicates task completion
+
+        return False # node is not close enough to the goal node, keep iteration to find other candidate nodes
+
+
 
     def _trace_path_from_start(self, node=None):
         """
@@ -170,6 +285,21 @@ class AdaRRT():
             ending at the goal state.
         """
         # FILL in your code here
+        if node is None:
+            node = self.goal # tracing the path starts from the goal node
+
+        node_record_in_path = [] # initialize a list to store all RRT node state from the path beginning at the start state and
+                                #  ending at the goal state
+        current_node = node # initialize a pointer firstly point to the goal node. start of the path tracing
+
+        # From goal node, trace back to the parent node layer by layer in a bottom-up fashion
+        while current_node is not None:  # ONLY start node has no parent,other RRT nodes is created and obviously has a parent linked with
+                                         # upon tracing to the start node, stop the iteration
+            node_record_in_path.append(current_node.state.tolist()) 
+            current_node = current_node.parent # start next iteration from the parent node, trace one layer up
+
+        node_record_in_path.reverse() # adjust list of states beginning at the start state and ending at the goal state
+        return node_record_in_path
 
     def _check_for_collision(self, sample):
         """
