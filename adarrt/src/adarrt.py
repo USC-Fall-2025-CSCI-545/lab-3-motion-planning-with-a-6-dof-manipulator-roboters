@@ -61,7 +61,7 @@ class AdaRRT():
                  joint_upper_limits=None,
                  ada_collision_constraint=None,
                  step_size=0.25,
-                 goal_precision=1.0,
+                 goal_precision=0.2,
                  max_iter=10000):
         """
         :param start_state: Array representing the starting state.
@@ -107,7 +107,12 @@ class AdaRRT():
         """
         for k in range(self.max_iter):
             # FILL in your code here
-            random_sample = self._get_random_sample() # step 1: sample a random point
+            choice = np.random.choice([True, False], 1, p=[0.2, 0.8])
+            random_sample = None
+            if choice:
+                random_sample = self._get_random_sample_near_goal() # step 1: sample a random point near goal
+            else:
+                random_sample = self._get_random_sample()
             nearest_neighbor = self._get_nearest_neighbor(random_sample) # step 2: find nearest neighbor for the corresponding sample point
             new_node = self._extend_sample(random_sample,nearest_neighbor) # step 3: create a new node in the direction of sample from its NN
 
@@ -132,7 +137,15 @@ class AdaRRT():
         # FILL in your code here
         return np.random.uniform(self.joint_lower_limits,
                                  self.joint_upper_limits)
-
+    
+    def _get_random_sample_near_goal(self):
+        lower_limits = self.goal.state - 0.05
+        lower_limits = np.maximum(lower_limits, self.joint_lower_limits)
+        upper_limits = self.goal.state + 0.05
+        upper_limits = np.minimum(upper_limits, self.joint_upper_limits)
+        
+        return np.random.uniform(lower_limits, upper_limits)
+        
     def angle_difference_mapping(self,state_x,state_y):
         '''
         Input: 2 state vector state_x and state_y represents angle sets
