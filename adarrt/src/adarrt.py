@@ -402,7 +402,6 @@ def main(is_sim):
         rospy.sleep(10.0)
 
 if __name__ == '__main__':
-
     parser = argparse.ArgumentParser()
     parser.add_argument('--sim', dest='is_sim', action='store_true')
     parser.add_argument('--real', dest='is_sim', action='store_false')
