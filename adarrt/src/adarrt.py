@@ -6,14 +6,14 @@ import time
 import adapy
 import numpy as np
 import rospy
-
+import pdb
 
 class AdaRRT():
     """
     Rapidly-Exploring Random Trees (RRT) for the ADA controller.
     """
-    joint_lower_limits = np.array([-3.14, 1.57, 0.33, -3.14, 0, 0])
-    joint_upper_limits = np.array([3.14, 5.00, 5.00, 3.14, 3.14, 3.14])
+    joint_lower_limits = np.array([-100, -100, -100, -100, -100, -100])
+    joint_upper_limits = np.array([100,100, 100, 100,100,100])
     periodic_index = [0,3]
 
     class Node():
@@ -61,7 +61,7 @@ class AdaRRT():
                  joint_upper_limits=None,
                  ada_collision_constraint=None,
                  step_size=0.25,
-                 goal_precision=1.0,
+                 goal_precision=0.2,
                  max_iter=10000):
         """
         :param start_state: Array representing the starting state.
@@ -107,7 +107,12 @@ class AdaRRT():
         """
         for k in range(self.max_iter):
             # FILL in your code here
-            random_sample = self._get_random_sample() # step 1: sample a random point
+            choice = np.random.choice([True, False], 1, p=[0.2, 0.8])
+            random_sample = None
+            if choice:
+                random_sample = self._get_random_sample_near_goal() # step 1: sample a random point near goal
+            else:
+                random_sample = self._get_random_sample()
             nearest_neighbor = self._get_nearest_neighbor(random_sample) # step 2: find nearest neighbor for the corresponding sample point
             new_node = self._extend_sample(random_sample,nearest_neighbor) # step 3: create a new node in the direction of sample from its NN
 
@@ -132,7 +137,15 @@ class AdaRRT():
         # FILL in your code here
         return np.random.uniform(self.joint_lower_limits,
                                  self.joint_upper_limits)
-
+    
+    def _get_random_sample_near_goal(self):
+        lower_limits = self.goal.state - 0.05
+        lower_limits = np.maximum(lower_limits, self.joint_lower_limits)
+        upper_limits = self.goal.state + 0.05
+        upper_limits = np.minimum(upper_limits, self.joint_upper_limits)
+        
+        return np.random.uniform(lower_limits, upper_limits)
+        
     def angle_difference_mapping(self,state_x,state_y):
         '''
         Input: 2 state vector state_x and state_y represents angle sets
@@ -324,7 +337,7 @@ def main(is_sim):
     ada = adapy.Ada(is_sim)
 
     armHome = [-1.5, 3.22, 1.23, -2.19, 1.8, 1.2]
-    goalConfig = [-1.72, 4.44, 2.02, -2.04, 2.66, 1.39]
+    goalConfig = [-2.37, 3.81, 1.31, -0.05, 0.78, 0.25]
     delta = 0.25
     eps = 1.0
 
@@ -380,15 +393,16 @@ def main(is_sim):
             waypoints.append((0.0 + i, waypoint))
 
         t0 = time.clock()
-        traj = ada.compute_joint_space_path(
-            ada.get_arm_state_space(), waypoints)
+        traj = ada.compute_smooth_joint_space_path(
+            ada.get_arm_state_space(), waypoints, None)
         t = time.clock() - t0
         print(str(t) + "seconds elapsed")
         raw_input('Press ENTER to execute trajectory and exit')
         ada.execute_trajectory(traj)
-        rospy.sleep(1.0)
+        rospy.sleep(10.0)
 
 if __name__ == '__main__':
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--sim', dest='is_sim', action='store_true')
     parser.add_argument('--real', dest='is_sim', action='store_false')
